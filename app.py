@@ -512,22 +512,10 @@ def config():
 
 # ─── Routes: Transcription ───
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    if "file" not in request.files:
-        return jsonify({"error": "No file"}), 400
-
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "Empty filename"}), 400
-
-    job_id = str(uuid.uuid4())[:8]
-    ext = os.path.splitext(f.filename)[1]
-    save_path = os.path.join(UPLOAD_DIR, f"{job_id}{ext}")
-    f.save(save_path)
-
+def parse_transcribe_options(form):
+    """Parse transcription options from request form data."""
     def get_opt(name, default, type_fn=str):
-        val = request.form.get(name)
+        val = form.get(name)
         if val is None or val == "":
             return default
         try:
@@ -535,7 +523,7 @@ def upload():
         except (ValueError, TypeError):
             return default
 
-    options = {
+    return {
         "model": get_opt("model", DEFAULT_MODEL),
         "language": get_opt("language", "ru"),
         "beam_size": get_opt("beam_size", 5, int),
@@ -556,6 +544,23 @@ def upload():
         "max_speakers": get_opt("max_speakers", 0, int),
     }
 
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return jsonify({"error": "No file"}), 400
+
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "Empty filename"}), 400
+
+    job_id = str(uuid.uuid4())[:8]
+    ext = os.path.splitext(f.filename)[1]
+    save_path = os.path.join(UPLOAD_DIR, f"{job_id}{ext}")
+    f.save(save_path)
+
+    options = parse_transcribe_options(request.form)
+
     jobs[job_id] = {
         "id": job_id,
         "filename": f.filename,
@@ -567,6 +572,112 @@ def upload():
     }
 
     t = threading.Thread(target=transcribe_worker, args=(job_id, save_path), daemon=True)
+    t.start()
+
+    return jsonify({"job_id": job_id})
+
+
+# ─── URL download + transcribe ───
+
+COOKIES_PATH = "/data/cookies.txt"
+
+
+def youtube_worker(job_id, url, minutes):
+    job = jobs[job_id]
+    try:
+        job["status"] = "downloading"
+        out_template = os.path.join(UPLOAD_DIR, f"{job_id}.%(ext)s")
+
+        # Step 1: Get title
+        title_cmd = ["yt-dlp", "--js-runtimes", "node", "--no-playlist",
+                      "--print", "title", "--skip-download"]
+        if os.path.exists(COOKIES_PATH):
+            title_cmd += ["--cookies", COOKIES_PATH]
+        title_cmd.append(url)
+        title_res = subprocess.run(title_cmd, capture_output=True, text=True, timeout=60)
+        title = title_res.stdout.strip().split('\n')[0] if title_res.stdout.strip() else url
+
+        # Step 2: Download audio
+        cmd = [
+            "yt-dlp",
+            "--js-runtimes", "node",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "--audio-quality", "0",
+            "--output", out_template,
+            "--no-playlist",
+        ]
+        if os.path.exists(COOKIES_PATH):
+            cmd += ["--cookies", COOKIES_PATH]
+        if minutes and minutes > 0:
+            cmd += ["--download-sections", f"*0:00-{int(minutes)}:00"]
+        cmd.append(url)
+
+        print(f"[YT {job_id}] Downloading: {url}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        print(f"[YT {job_id}] stdout: {result.stdout[-200:]}")
+        print(f"[YT {job_id}] stderr: {result.stderr[-200:]}")
+
+        if result.returncode != 0:
+            stderr = result.stderr
+            if "Sign in to confirm" in stderr or "cookies" in stderr.lower():
+                job["error"] = "YouTube требует куки. Экспортируйте cookies.txt из браузера и положите в папку data/"
+            else:
+                job["error"] = f"Ошибка загрузки: {stderr[:500]}"
+            job["status"] = "error"
+            return
+
+        # Find the downloaded file (could be .mp3, .m4a, .opus, etc.)
+        import glob
+        files = glob.glob(os.path.join(UPLOAD_DIR, f"{job_id}.*"))
+        if not files:
+            job["status"] = "error"
+            job["error"] = "Файл не скачался"
+            return
+
+        filepath = files[0]
+        job["filename"] = title + os.path.splitext(filepath)[1]
+        job["filepath"] = filepath
+
+        # Hand off to existing transcription pipeline
+        transcribe_worker(job_id, filepath)
+
+    except subprocess.TimeoutExpired:
+        job["status"] = "error"
+        job["error"] = "Загрузка превысила 10 минут"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+        import traceback
+        traceback.print_exc()
+
+
+@app.route("/youtube", methods=["POST"])
+def youtube_download():
+    url = request.form.get("url", "").strip()
+    if not url:
+        return jsonify({"error": "No URL provided"}), 400
+
+    minutes = 0
+    try:
+        minutes = float(request.form.get("minutes", 0))
+    except (ValueError, TypeError):
+        pass
+
+    job_id = str(uuid.uuid4())[:8]
+    options = parse_transcribe_options(request.form)
+
+    jobs[job_id] = {
+        "id": job_id,
+        "filename": url,
+        "filepath": None,
+        "status": "downloading",
+        "segments": [],
+        "started_at": time.time(),
+        "options": options,
+    }
+
+    t = threading.Thread(target=youtube_worker, args=(job_id, url, minutes), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id})

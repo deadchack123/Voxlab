@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     gcc \
     g++ \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade pip && \
@@ -14,7 +15,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     coqui-tts \
     pydub \
     diarize \
-    "transformers>=4.57,<5.0"
+    "transformers>=4.57,<5.0" \
+    yt-dlp
 
 WORKDIR /app
 COPY app.py .

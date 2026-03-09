@@ -465,6 +465,28 @@
     </div>
     <input type="file" id="fileInput" accept="video/*,audio/*,.mp4,.webm,.mp3,.wav,.m4a,.ogg,.flac">
 
+    <div style="margin-top:0.75rem; display:flex; gap:0.5rem; align-items:center;">
+      <div style="position:relative; flex:1;">
+        <input type="text" id="youtube-url" placeholder="или вставь ссылку YouTube..."
+          style="width:100%; background:#09090b; border:1px solid #27272a; color:#e4e4e7;
+                 border-radius:8px; padding:0.6rem 0.75rem; font-size:0.9rem; outline:none;">
+      </div>
+      <select id="youtube-minutes"
+        style="background:#09090b; border:1px solid #27272a; color:#e4e4e7;
+               border-radius:8px; padding:0.6rem 0.5rem; font-size:0.85rem; outline:none; min-width:90px;">
+        <option value="0">Всё видео</option>
+        <option value="1">1 мин</option>
+        <option value="2">2 мин</option>
+        <option value="5" selected>5 мин</option>
+        <option value="10">10 мин</option>
+        <option value="15">15 мин</option>
+        <option value="30">30 мин</option>
+        <option value="60">60 мин</option>
+      </select>
+      <button onclick="startYouTube()" class="btn btn-accent"
+        style="white-space:nowrap; padding:0.6rem 1rem;">Загрузить</button>
+    </div>
+
     <div class="settings">
       <div class="settings-toggle" id="settingsToggle">
         <span>Настройки транскрибации</span>
@@ -941,6 +963,25 @@ async function startTranscription() {
   }
 }
 
+async function startYouTube() {
+  const urlInput = document.getElementById('youtube-url');
+  const url = urlInput.value.trim();
+  if (!url) { alert('Вставь ссылку YouTube'); return; }
+  const minutes = document.getElementById('youtube-minutes').value;
+  const form = new FormData();
+  form.append('url', url);
+  form.append('minutes', minutes);
+  const settings = getSettings();
+  Object.entries(settings).forEach(([k, v]) => form.append(k, v));
+  try {
+    const res = await fetch('/youtube', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    urlInput.value = '';
+    pollJob(data.job_id);
+  } catch (e) { alert('Ошибка: ' + e.message); }
+}
+
 // ─── STT: Job polling ───
 let lastDoneJobId = null;
 
@@ -976,13 +1017,14 @@ function getSpeakerDisplay(jobId, speaker) {
 
 function renderJob(card, job) {
   const statusMap = {
+    downloading: ['Загрузка видео...', 'loading'],
     queued: ['В очереди', 'queued'], loading_model: ['Загрузка модели...', 'loading'],
     transcribing: ['Транскрибация...', 'transcribing'], diarizing: ['Определение спикеров...', 'transcribing'],
     done: ['Готово', 'done'], error: ['Ошибка', 'error'],
   };
   const [label, cls] = statusMap[job.status] || ['...', 'queued'];
   const isDone = job.status === 'done';
-  const isWorking = ['loading_model', 'transcribing', 'queued', 'diarizing'].includes(job.status);
+  const isWorking = ['downloading', 'loading_model', 'transcribing', 'queued', 'diarizing'].includes(job.status);
   const segCount = (job.segments || []).length;
   const hasSpeakers = job.speakers && Object.keys(job.speakers).length > 0;
   const progress = job.duration && segCount > 0
