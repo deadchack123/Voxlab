@@ -1,8 +1,7 @@
 services:
   whisper:
-    image: ghcr.io/deadchack123/sst-tts:latest
-    platform: linux/amd64
-    container_name: whisper-web
+    build: .
+    container_name: whisper-web-dev
     ports:
       - "5050:5000"
     volumes:
