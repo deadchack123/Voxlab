@@ -1,0 +1,21 @@
+services:
+  whisper:
+    image: ghcr.io/deadchack123/sst-tts:latest
+    build: .
+    container_name: whisper-web
+    ports:
+      - "5050:5000"
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - model-cache:/root/.cache/huggingface
+      - tts-cache:/root/.local/share/tts
+      - wespeaker-cache:/root/.wespeaker
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
+    restart: unless-stopped
+
+volumes:
+  model-cache:
+  tts-cache:
+  wespeaker-cache:
