@@ -1,4 +1,4 @@
-# SST-TTS — Whisper + TTS Studio
+# Voxlab — Whisper + TTS Studio
 
 Веб-приложение для транскрибации речи и синтеза голоса. Работает локально в Docker, не требует GPU.
 
@@ -6,8 +6,8 @@
 
 ```bash
 # 1. Скачать docker-compose.yml
-mkdir sst-tts && cd sst-tts
-curl -O https://raw.githubusercontent.com/deadchack123/sst-tts/main/docker-compose.yml
+mkdir voxlab && cd voxlab
+curl -O https://raw.githubusercontent.com/deadchack123/voxlab/main/docker-compose.yml
 
 # 2. Запустить
 docker compose up -d
@@ -77,8 +77,8 @@ WHISPER_MODEL=large-v3-turbo
 Для разработки и тестирования:
 
 ```bash
-git clone https://github.com/deadchack123/sst-tts.git
-cd sst-tts
+git clone https://github.com/deadchack123/voxlab.git
+cd voxlab
 docker compose -f docker-compose.dev.yml up -d --build
 ```
 

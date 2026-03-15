@@ -1,6 +1,6 @@
 services:
   whisper:
-    image: ghcr.io/deadchack123/sst-tts:latest
+    image: ghcr.io/deadchack123/voxlab:latest
     platform: linux/amd64
     container_name: whisper-web
     ports:
