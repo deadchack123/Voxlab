@@ -1,8 +1,9 @@
 services:
   whisper:
-    image: ghcr.io/deadchack123/sst-tts:latest
-    platform: linux/amd64
-    container_name: whisper-web
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: whisper-web-gpu
     ports:
       - "5050:5000"
     volumes:
@@ -12,6 +13,14 @@ services:
       - wespeaker-cache:/root/.wespeaker
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
+      - DEVICE=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       - pot-provider
     restart: unless-stopped

@@ -1,0 +1,54 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Add deadsnakes PPA for Python 3.12
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    ffmpeg \
+    libsndfile1 \
+    gcc \
+    g++ \
+    nodejs \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bootstrap pip for Python 3.12
+RUN python3.12 -m ensurepip --upgrade
+
+# Layer 1: PyTorch with CUDA support
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cu124
+
+# Layer 2: Heavy ML packages (rarely change)
+RUN pip install --no-cache-dir \
+    faster-whisper \
+    coqui-tts \
+    diarize \
+    "transformers>=4.57,<5.0"
+
+# Layer 3: Light/frequently updated packages
+RUN pip install --no-cache-dir \
+    flask \
+    pydub \
+    "yt-dlp[default]" \
+    bgutil-ytdlp-pot-provider
+
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+WORKDIR /app
+COPY app.py .
+COPY transcribe.py .
+COPY static/ static/
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]

@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import torch
 from faster_whisper import WhisperModel
 
 def main():
@@ -19,7 +20,10 @@ def main():
         sys.exit(1)
 
     print(f"Loading model: {model_size} ...")
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    compute_type = "float16" if device == "cuda" else "int8"
+    print(f"Using device: {device}")
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     print(f"Transcribing: {input_file}")
     start = time.time()

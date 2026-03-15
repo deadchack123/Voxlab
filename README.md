@@ -22,9 +22,13 @@ docker compose up -d
 ### Транскрибация (STT)
 
 1. Открой http://localhost:5050
-2. Перетащи аудио/видео файл в зону загрузки (или нажми для выбора)
+2. Загрузи источник:
+   - **Файл** — перетащи аудио/видео в зону загрузки (или нажми для выбора)
+   - **Ссылка** — вставь URL с YouTube, Rutube, VK и [1000+ сайтов](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
 3. Жди результат — текст появится с таймкодами
 4. Скачай результат в нужном формате: TXT, SRT, VTT или JSON
+
+> **YouTube:** если видео не загружается — вставь cookies через кнопку "Вставить из буфера" (нужно расширение [Get cookies.txt](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) для Chrome)
 
 **Настройки транскрибации** (раскрывающаяся панель):
 - Модель Whisper — от tiny (быстро, неточно) до large-v3 (медленно, точно). По умолчанию large-v3-turbo — лучший баланс
@@ -76,6 +80,33 @@ WHISPER_MODEL=large-v3-turbo
 git clone https://github.com/deadchack123/sst-tts.git
 cd sst-tts
 docker compose -f docker-compose.dev.yml up -d --build
+```
+
+## GPU-ускорение (NVIDIA)
+
+GPU даёт 10-20x ускорение транскрибации. Нужна видеокарта NVIDIA с поддержкой CUDA.
+
+### Запуск с GPU
+
+```bash
+docker compose -f docker-compose.gpu.yml up -d --build
+```
+
+В логах должно быть: `Using device: cuda (compute_type: float16)`
+
+### Требования для GPU
+
+- **Linux:** установить [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+- **Windows (WSL2):**
+  1. Установить последний [NVIDIA драйвер для Windows](https://www.nvidia.com/drivers/) (Game Ready или Studio)
+  2. Включить WSL2 в Docker Desktop (Settings → General → Use WSL2)
+  3. Docker Desktop автоматически подхватит GPU через WSL2
+- **macOS:** не поддерживается (нет NVIDIA GPU)
+
+### Проверка GPU в контейнере
+
+```bash
+docker compose -f docker-compose.gpu.yml exec whisper python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 ## Системные требования

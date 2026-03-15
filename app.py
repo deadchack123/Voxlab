@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import os
+import re
 import uuid
 import time
 import json
 import threading
 import subprocess
 import urllib.parse
+import selectors
 import torch
 
 # Fix PyTorch 2.6+ weights_only default change
@@ -15,6 +17,10 @@ def _patched_torch_load(*args, **kwargs):
         kwargs['weights_only'] = False
     return _orig_torch_load(*args, **kwargs)
 torch.load = _patched_torch_load
+
+DEVICE = os.environ.get("DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+print(f"Using device: {DEVICE} (compute_type: {COMPUTE_TYPE})")
 
 from flask import Flask, request, jsonify, send_from_directory, send_file
 from faster_whisper import WhisperModel
@@ -108,7 +114,7 @@ def get_whisper(model_size, compute_type="int8"):
         with whisper_lock:
             if key not in whisper_models:
                 print(f"Loading whisper: {model_size} ({compute_type})...")
-                whisper_models[key] = WhisperModel(model_size, device="cpu", compute_type=compute_type)
+                whisper_models[key] = WhisperModel(model_size, device=DEVICE, compute_type=compute_type)
                 print(f"Whisper {model_size} ready!")
     return whisper_models[key]
 
@@ -123,7 +129,7 @@ def get_tts():
                 from TTS.api import TTS
                 print("Loading XTTS v2 model...")
                 with patch("builtins.input", return_value="y"):
-                    tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cpu")
+                    tts_api = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(DEVICE)
                 # Extract raw Xtts model for direct inference with advanced params
                 tts_model = tts_api.synthesizer.tts_model
                 tts_model.eval()
@@ -529,7 +535,7 @@ def parse_transcribe_options(form):
         "beam_size": get_opt("beam_size", 5, int),
         "best_of": get_opt("best_of", 5, int),
         "temperature": list(map(float, get_opt("temperature", "0.0,0.2,0.4,0.6,0.8,1.0").split(","))),
-        "compute_type": get_opt("compute_type", "int8"),
+        "compute_type": get_opt("compute_type", COMPUTE_TYPE),
         "vad_filter": get_opt("vad_filter", "true") == "true",
         "vad_min_silence_ms": get_opt("vad_min_silence_ms", 500, int),
         "vad_speech_pad_ms": get_opt("vad_speech_pad_ms", 400, int),
@@ -581,49 +587,101 @@ def upload():
 
 COOKIES_PATH = "/data/cookies.txt"
 
+# PO Token provider (bgutil-ytdlp-pot-provider running as sidecar)
+POT_PROVIDER_URL = os.environ.get("POT_PROVIDER_URL", "http://pot-provider:4416")
+
+# One-time yt-dlp update flag
+_ytdlp_updated = False
+_ytdlp_update_lock = threading.Lock()
+
+
+def _base_ytdlp_cmd():
+    """Base yt-dlp command with PO Token provider."""
+    cmd = ["yt-dlp", "--js-runtimes", "node"]
+    # PO Token provider for YouTube bot-detection bypass
+    cmd += ["--extractor-args", f"youtubepot-bgutilhttp:base_url={POT_PROVIDER_URL}"]
+    if os.path.exists(COOKIES_PATH):
+        cmd += ["--cookies", COOKIES_PATH]
+    return cmd
+
 
 def youtube_worker(job_id, url, minutes):
     job = jobs[job_id]
     try:
+        # One-time yt-dlp self-update (thread-safe)
+        global _ytdlp_updated
+        if not _ytdlp_updated:
+            with _ytdlp_update_lock:
+                if not _ytdlp_updated:
+                    _ytdlp_updated = True
+                    try:
+                        print("[YT] Updating yt-dlp...")
+                        subprocess.run(["yt-dlp", "-U"], capture_output=True, text=True, timeout=60)
+                    except Exception:
+                        pass
+
         job["status"] = "downloading"
+        job["download_progress"] = "получение информации..."
         out_template = os.path.join(UPLOAD_DIR, f"{job_id}.%(ext)s")
 
-        # Step 1: Get title
-        title_cmd = ["yt-dlp", "--js-runtimes", "node", "--no-playlist",
-                      "--print", "title", "--skip-download"]
-        if os.path.exists(COOKIES_PATH):
-            title_cmd += ["--cookies", COOKIES_PATH]
-        title_cmd.append(url)
-        title_res = subprocess.run(title_cmd, capture_output=True, text=True, timeout=60)
-        title = title_res.stdout.strip().split('\n')[0] if title_res.stdout.strip() else url
+        # Try to get title (non-blocking, 15s timeout)
+        title = url
+        try:
+            title_cmd = _base_ytdlp_cmd() + ["--no-playlist", "--print", "title", "--skip-download"]
+            title_cmd.append(url)
+            title_res = subprocess.run(title_cmd, capture_output=True, text=True, timeout=15)
+            if title_res.returncode == 0 and title_res.stdout.strip():
+                title = title_res.stdout.strip().split('\n')[0]
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+        job["filename"] = title
+        job["download_progress"] = "начало загрузки..."
 
-        # Step 2: Download audio
-        cmd = [
-            "yt-dlp",
-            "--js-runtimes", "node",
+        # Download audio (128kbps — plenty for transcription)
+        cmd = _base_ytdlp_cmd() + [
+            "-f", "bestaudio/best",
             "--extract-audio",
-            "--audio-format", "mp3",
-            "--audio-quality", "0",
             "--output", out_template,
             "--no-playlist",
+            "--newline",
         ]
-        if os.path.exists(COOKIES_PATH):
-            cmd += ["--cookies", COOKIES_PATH]
         if minutes and minutes > 0:
             cmd += ["--download-sections", f"*0:00-{int(minutes)}:00"]
         cmd.append(url)
 
         print(f"[YT {job_id}] Downloading: {url}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        print(f"[YT {job_id}] stdout: {result.stdout[-200:]}")
-        print(f"[YT {job_id}] stderr: {result.stderr[-200:]}")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stderr_lines = []
+        sel = selectors.DefaultSelector()
+        sel.register(proc.stdout, selectors.EVENT_READ)
+        sel.register(proc.stderr, selectors.EVENT_READ)
+        open_streams = 2
+        while open_streams > 0:
+            for key, _ in sel.select(timeout=600):
+                line = key.fileobj.readline()
+                if not line:
+                    sel.unregister(key.fileobj)
+                    open_streams -= 1
+                    continue
+                line = line.rstrip()
+                if key.fileobj is proc.stderr:
+                    stderr_lines.append(line)
+                # Parse yt-dlp progress: [download]  45.2% of  5.24MiB at  1.23MiB/s ETA 00:04
+                m = re.search(r'\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+\S+)', line)
+                if m:
+                    job["download_progress"] = f"{float(m.group(1)):.0f}% из {m.group(2)}"
+                elif '[ExtractAudio]' in line:
+                    job["download_progress"] = "конвертация аудио..."
+        sel.close()
+        proc.wait(timeout=30)
 
-        if result.returncode != 0:
-            stderr = result.stderr
-            if "Sign in to confirm" in stderr or "cookies" in stderr.lower():
-                job["error"] = "YouTube требует куки. Экспортируйте cookies.txt из браузера и положите в папку data/"
-            else:
-                job["error"] = f"Ошибка загрузки: {stderr[:500]}"
+        stderr_text = "\n".join(stderr_lines)
+        print(f"[YT {job_id}] exit={proc.returncode}")
+        if stderr_lines:
+            print(f"[YT {job_id}] stderr: {stderr_text[-300:]}")
+
+        if proc.returncode != 0:
+            job["error"] = f"Ошибка загрузки: {stderr_text[:500]}"
             job["status"] = "error"
             return
 
@@ -650,6 +708,47 @@ def youtube_worker(job_id, url, minutes):
         job["error"] = str(e)
         import traceback
         traceback.print_exc()
+
+
+# ─── YouTube cookies management ───
+
+@app.route("/youtube/cookies-status")
+def youtube_cookies_status():
+    has_cookies = os.path.exists(COOKIES_PATH)
+    size = os.path.getsize(COOKIES_PATH) if has_cookies else 0
+    return jsonify({"has_cookies": has_cookies, "size": size})
+
+
+@app.route("/youtube/cookies-upload", methods=["POST"])
+def youtube_cookies_upload():
+    # Accept either file upload or raw text
+    text = None
+    if request.is_json:
+        text = request.json.get("text", "")
+    elif "file" in request.files and request.files["file"].filename:
+        text = request.files["file"].read().decode("utf-8", errors="replace")
+    elif request.form.get("text"):
+        text = request.form["text"]
+
+    if not text or not text.strip():
+        return jsonify({"error": "Пустые данные"}), 400
+
+    # Basic validation: Netscape cookie format
+    if not any(line.strip().startswith((".youtube", "# Netscape", "# HTTP Cookie", ".google"))
+               for line in text.split("\n")[:20]):
+        return jsonify({"error": "Неверный формат cookies. Скопируйте весь текст из расширения 'Get cookies.txt'"}), 400
+
+    content = text.encode("utf-8")
+    with open(COOKIES_PATH, "wb") as out:
+        out.write(content)
+    return jsonify({"ok": True, "size": len(content)})
+
+
+@app.route("/youtube/cookies-delete", methods=["POST"])
+def youtube_cookies_delete():
+    if os.path.exists(COOKIES_PATH):
+        os.remove(COOKIES_PATH)
+    return jsonify({"ok": True})
 
 
 @app.route("/youtube", methods=["POST"])
@@ -702,6 +801,7 @@ def status(job_id):
         "options": job.get("options"),
         "speakers": job.get("speakers"),
         "cleaned_text": job.get("cleaned_text"),
+        "download_progress": job.get("download_progress"),
     })
 
 

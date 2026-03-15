@@ -11,6 +11,14 @@ services:
       - wespeaker-cache:/root/.wespeaker
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3-turbo}
+    depends_on:
+      - pot-provider
+    restart: unless-stopped
+
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider
+    container_name: pot-provider
+    init: true
     restart: unless-stopped
 
 volumes:

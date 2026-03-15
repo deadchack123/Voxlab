@@ -264,7 +264,8 @@
   }
   .tts-panel h2 { font-size: 1.1rem; margin-bottom: 1rem; color: #fff; font-weight: 600; }
 
-  .tts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+  .tts-grid { display: grid; grid-template-columns: 1fr auto; gap: 1rem; margin-bottom: 1rem; }
+  .tts-grid select { min-width: 0; }
 
   .tts-textarea {
     width: 100%; min-height: 120px; background: #09090b; border: 1px solid #27272a;
@@ -467,7 +468,7 @@
 
     <div style="margin-top:0.75rem; display:flex; gap:0.5rem; align-items:center;">
       <div style="position:relative; flex:1;">
-        <input type="text" id="youtube-url" placeholder="или вставь ссылку YouTube..."
+        <input type="text" id="youtube-url" placeholder="Ссылка на YouTube, VK, Rutube, и др..."
           style="width:100%; background:#09090b; border:1px solid #27272a; color:#e4e4e7;
                  border-radius:8px; padding:0.6rem 0.75rem; font-size:0.9rem; outline:none;">
       </div>
@@ -485,6 +486,28 @@
       </select>
       <button onclick="startYouTube()" class="btn btn-accent"
         style="white-space:nowrap; padding:0.6rem 1rem;">Загрузить</button>
+    </div>
+
+    <!-- YouTube Cookies Status -->
+    <div id="yt-cookies-bar" style="margin-top:0.5rem; font-size:0.8rem;">
+      <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <span id="yt-cookies-status" style="color:#71717a;"></span>
+        <button id="yt-cookies-paste-btn" onclick="ytCookiesPaste()" style="display:none;
+          background:none; border:1px dashed #3f3f46; color:#a1a1aa; border-radius:6px;
+          padding:0.2rem 0.6rem; font-size:0.8rem; cursor:pointer;">Вставить из буфера</button>
+        <button id="yt-cookies-delete-btn" onclick="ytCookiesDelete()" style="display:none;
+          background:none; border:1px solid #3f3f46; color:#71717a; border-radius:6px;
+          padding:0.2rem 0.5rem; font-size:0.75rem; cursor:pointer;">Удалить</button>
+      </div>
+      <div id="yt-cookies-hint" style="display:none; margin-top:0.4rem; color:#71717a; font-size:0.75rem; line-height:1.4;">
+        1. Установите расширение
+        <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc" target="_blank" style="color:#60a5fa;">Get cookies.txt LOCALLY</a>
+        (Chrome) или
+        <a href="https://addons.mozilla.org/firefox/addon/cookies-txt/" target="_blank" style="color:#60a5fa;">cookies.txt</a>
+        (Firefox)<br>
+        2. Откройте <a href="https://youtube.com" target="_blank" style="color:#60a5fa;">youtube.com</a>, войдите в аккаунт<br>
+        3. Нажмите на расширение → Export → загрузите файл сюда
+      </div>
     </div>
 
     <div class="settings">
@@ -982,6 +1005,64 @@ async function startYouTube() {
   } catch (e) { alert('Ошибка: ' + e.message); }
 }
 
+// ─── YouTube Cookies ───
+
+async function ytCookiesRefresh() {
+  try {
+    const res = await fetch('/youtube/cookies-status');
+    const data = await res.json();
+    const statusEl = document.getElementById('yt-cookies-status');
+    const uploadBtn = document.getElementById('yt-cookies-upload-btn');
+    const deleteBtn = document.getElementById('yt-cookies-delete-btn');
+    const hintEl = document.getElementById('yt-cookies-hint');
+
+    const pasteBtn = document.getElementById('yt-cookies-paste-btn');
+    if (data.has_cookies) {
+      const kb = (data.size / 1024).toFixed(1);
+      statusEl.textContent = '\uD83C\uDF6A Cookies (' + kb + ' KB)';
+      statusEl.style.color = '#4ade80';
+      pasteBtn.style.display = '';
+      deleteBtn.style.display = '';
+      hintEl.style.display = 'none';
+    } else {
+      statusEl.textContent = '\u26A0 Для YouTube нужны cookies';
+      statusEl.style.color = '#fbbf24';
+      pasteBtn.style.display = '';
+      deleteBtn.style.display = 'none';
+      hintEl.style.display = 'block';
+    }
+  } catch (e) {}
+}
+
+async function ytCookiesPaste() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text || !text.trim()) { alert('Буфер обмена пуст'); return; }
+    const res = await fetch('/youtube/cookies-upload', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    ytCookiesRefresh();
+  } catch (e) {
+    if (e.name === 'NotAllowedError') {
+      alert('Браузер заблокировал доступ к буферу. Разрешите или используйте Ctrl+V в поле ниже.');
+    } else {
+      alert('Ошибка: ' + e.message);
+    }
+  }
+}
+
+async function ytCookiesDelete() {
+  if (!confirm('Удалить cookies?')) return;
+  await fetch('/youtube/cookies-delete', { method: 'POST' });
+  ytCookiesRefresh();
+}
+
+ytCookiesRefresh();
+
 // ─── STT: Job polling ───
 let lastDoneJobId = null;
 
@@ -1017,12 +1098,16 @@ function getSpeakerDisplay(jobId, speaker) {
 
 function renderJob(card, job) {
   const statusMap = {
-    downloading: ['Загрузка видео...', 'loading'],
+    downloading: ['Загрузка...', 'loading'],
     queued: ['В очереди', 'queued'], loading_model: ['Загрузка модели...', 'loading'],
     transcribing: ['Транскрибация...', 'transcribing'], diarizing: ['Определение спикеров...', 'transcribing'],
     done: ['Готово', 'done'], error: ['Ошибка', 'error'],
   };
-  const [label, cls] = statusMap[job.status] || ['...', 'queued'];
+  let [label, cls] = statusMap[job.status] || ['...', 'queued'];
+  // Show download progress inline
+  if (job.status === 'downloading' && job.download_progress) {
+    label = job.download_progress;
+  }
   const isDone = job.status === 'done';
   const isWorking = ['downloading', 'loading_model', 'transcribing', 'queued', 'diarizing'].includes(job.status);
   const segCount = (job.segments || []).length;
